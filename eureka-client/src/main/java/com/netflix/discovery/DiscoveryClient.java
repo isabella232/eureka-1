@@ -1733,4 +1733,38 @@ public class DiscoveryClient implements LookupService {
         }
     }
 
+
+    /**
+     * Invoked when the remote status of this client has changed.
+     * Subclasses may override this method to implement custom behavior if needed.
+     *
+     * @param oldStatus the previous remote {@link InstanceStatus}
+     * @param newStatus the new remote {@link InstanceStatus}
+     */
+    protected void onRemoteStatusChanged(InstanceInfo.InstanceStatus oldStatus, InstanceInfo.InstanceStatus newStatus) {
+    	fireEvent(new StatusChangeEvent(oldStatus, newStatus));
+    }
+
+    /**
+     * Invoked every time the local registry cache is refreshed (whether changes have
+     * been detected or not).
+     *
+     * Subclasses may override this method to implement custom behavior if needed.
+     */
+    protected void onCacheRefreshed() {
+    	fireEvent(new CacheRefreshedEvent());
+    }
+
+
+    /**
+     * Send the given event on the EventBus if one is available
+     *
+     * @param event the event to send on the eventBus
+     */
+    protected void fireEvent(DiscoveryEvent event) {
+    	// Publish event if an EventBus is available
+        if (eventBus != null) {
+            eventBus.publish(event);
+        }
+    }
 }
