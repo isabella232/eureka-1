@@ -37,13 +37,16 @@ import javax.annotation.Nullable;
 import javax.annotation.PreDestroy;
 import javax.inject.Singleton;
 import javax.naming.directory.DirContext;
-import javax.ws.rs.client.Entity;
+import javax.ws.rs.client.*;
 import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
 
+import org.apache.http.HttpHost;
+import org.apache.http.client.config.RequestConfig;
+import org.glassfish.jersey.apache.connector.ApacheClientProperties;
 import org.glassfish.jersey.client.ClientConfig;
 import org.glassfish.jersey.client.ClientResponse;
-import org.glassfish.jersey.client.JerseyWebTarget;
 import org.glassfish.jersey.message.GZipEncoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -126,7 +129,7 @@ public class DiscoveryClient implements LookupService {
     private final com.netflix.servo.monitor.Timer FETCH_REGISTRY_TIMER = Monitors
             .newTimer(PREFIX + "FetchRegistry");
     private final Counter SERVER_RETRY_COUNTER = Monitors.newCounter(PREFIX
-            + "Retry");
+                                                                         + "Retry");
     private final Counter ALL_SERVER_FAILURE_COUNT = Monitors.newCounter(PREFIX
             + "Failed");
     private final Counter REREGISTER_COUNTER = Monitors.newCounter(PREFIX
@@ -143,7 +146,7 @@ public class DiscoveryClient implements LookupService {
     private boolean isRegisteredWithDiscovery = false;
     private String discoveryServerAMIId;
     private JerseyClient discoveryJerseyClient;
-    private org.glassfish.jersey.client.JerseyClient discoveryHttpClient;
+    private Client discoveryHttpClient;
     protected static EurekaClientConfig clientConfig;
     private final AtomicReference<String> remoteRegionsToFetch;
     private final InstanceRegionChecker instanceRegionChecker;
@@ -217,12 +220,16 @@ public class DiscoveryClient implements LookupService {
                 // whose value is "gzip"
                 discoveryHttpClient.register(new GZipEncoder());
             }
-            // TODO: fix proxy
-//            if (proxyHost != null && proxyPort != null) {
-//                cc.getProperties().put(
-//                        ClientConfig.PR,
-//                        "http://" + proxyHost + ":" + proxyPort);
-//            }
+            // XXX this _might_ race with the client config itself
+            if (proxyHost != null && proxyPort != null) {
+                // mutate existing request properties if present
+                RequestConfig rc =
+                    ((RequestConfig) cc.getProperty(ApacheClientProperties.REQUEST_CONFIG));
+                RequestConfig.Builder rcb =
+                    rc == null ? RequestConfig.custom() : RequestConfig.copy(rc);
+                rcb.setProxy(new HttpHost(proxyHost, Integer.valueOf(proxyPort)));
+                cc.property(ApacheClientProperties.REQUEST_CONFIG, rcb.build());
+            }
 
         } catch (Throwable e) {
             throw new RuntimeException("Failed to initialize DiscoveryClient!", e);
@@ -453,11 +460,11 @@ public class DiscoveryClient implements LookupService {
      * @return - The registry information containing all applications.
      */
     public Applications getApplications(String serviceUrl) {
-        ClientResponse response = null;
+        Response response = null;
         Applications apps = null;
         try {
             response = getUrl(serviceUrl + "apps/");
-            apps = (Applications)response.getEntity();
+            apps = response.readEntity(Applications.class);
             logger.debug(PREFIX + appPathIdentifier + " -  refresh status: "
                     + response.getStatus());
             return apps;
@@ -500,7 +507,7 @@ public class DiscoveryClient implements LookupService {
      */
     void register() {
         logger.info(PREFIX + appPathIdentifier + ": registering service...");
-        ClientResponse response = null;
+        Response response = null;
         try {
             response = makeRemoteCall(Action.Register);
             isRegisteredWithDiscovery = true;
@@ -589,7 +596,7 @@ public class DiscoveryClient implements LookupService {
      * unregister w/ the eureka service.
      */
     void unregister() {
-        ClientResponse response = null;
+        Response response = null;
         try {
             response = makeRemoteCall(Action.Cancel);
 
@@ -621,7 +628,7 @@ public class DiscoveryClient implements LookupService {
      * @return true if the registry was fetched
      */
     private boolean fetchRegistry(boolean forceFullRegistryFetch) {
-        ClientResponse response = null;
+        Response response = null;
         Stopwatch tracer = FETCH_REGISTRY_TIMER.start();
 
         try {
@@ -645,7 +652,7 @@ public class DiscoveryClient implements LookupService {
                 Applications delta = null;
                 response = makeRemoteCall(Action.Refresh_Delta);
                 if (response.getStatus() == Status.OK.getStatusCode()) {
-                    delta = (Applications)response.getEntity();
+                    delta = response.readEntity(Applications.class);
                 }
                 if (delta == null) {
                     logger.warn("The server does not allow the delta revision to be applied because it is not safe. "
@@ -742,11 +749,11 @@ public class DiscoveryClient implements LookupService {
      * @throws Throwable
      *             on error.
      */
-    private ClientResponse getAndStoreFullRegistry() throws Throwable {
-        ClientResponse response;
+    private Response getAndStoreFullRegistry() throws Throwable {
+        Response response;
         response = makeRemoteCall(Action.Refresh);
         logger.info("Getting all instance registry info from the eureka server");
-        Applications apps = (Applications)response.getEntity();
+        Applications apps = response.readEntity(Applications.class);
         if (apps == null) {
             logger.error("The application is null for some reason. Not storing this information");
         } else {
@@ -784,7 +791,7 @@ public class DiscoveryClient implements LookupService {
      * @throws Throwable
      *             on any error.
      */
-    private ClientResponse reconcileAndLogDifference(ClientResponse response,
+    private Response reconcileAndLogDifference(Response response,
             Applications delta, String reconcileHashCode) throws Throwable {
         logger.warn(
                 "The Reconcile hashcodes do not match, client : {}, server : {}. Getting the full registry",
@@ -792,7 +799,7 @@ public class DiscoveryClient implements LookupService {
 
         this.closeResponse(response);
         response = makeRemoteCall(Action.Refresh);
-        Applications serverApps = (Applications)response.getEntity();
+        Applications serverApps = response.readEntity(Applications.class);
         try {
             Map<String, List<String>> reconcileDiffMap = getApplications().getReconcileMapDiff(serverApps);
             String reconcileString = "";
@@ -893,11 +900,11 @@ public class DiscoveryClient implements LookupService {
      *
      * @param action
      *            the action to be performed on eureka server.
-     * @return ClientResponse the HTTP response object.
+     * @return Response the HTTP response object.
      * @throws Throwable
      *             on any error.
      */
-    private ClientResponse makeRemoteCall(Action action) throws Throwable {
+    private Response makeRemoteCall(Action action) throws Throwable {
         return makeRemoteCall(action, 0);
     }
 
@@ -910,16 +917,16 @@ public class DiscoveryClient implements LookupService {
      *            Try the fallback servers in case of problems communicating to
      *            the primary one.
      *
-     * @return ClientResponse the HTTP response object.
+     * @return Response the HTTP response object.
      * @throws Throwable
      *             on any error.
      */
-    private ClientResponse makeRemoteCall(Action action, int serviceUrlIndex)
+    private Response makeRemoteCall(Action action, int serviceUrlIndex)
             throws Throwable {
         String urlPath = null;
         Stopwatch tracer = null;
         String serviceUrl = eurekaServiceUrls.get().get(serviceUrlIndex);
-        ClientResponse response = null;
+        Response response = null;
         logger.debug("Discovery Client talking to the server {}", serviceUrl);
         try {
             // If the application is unknown do not register/renew/cancel but
@@ -929,7 +936,7 @@ public class DiscoveryClient implements LookupService {
                     .equals(action)))) {
                 return null;
             }
-            JerseyWebTarget r = discoveryHttpClient.target(serviceUrl);
+            WebTarget r = discoveryHttpClient.target(serviceUrl);
             switch (action) {
             case Renew:
                 tracer = RENEW_TIMER.start();
@@ -941,7 +948,7 @@ public class DiscoveryClient implements LookupService {
                         .queryParam("lastDirtyTimestamp",
                                 instanceInfo.getLastDirtyTimestamp().toString())
                         .request()
-                        .put(null, ClientResponse.class);
+                        .put(null);
                 break;
             case Refresh:
                 tracer = REFRESH_TIMER.start();
@@ -964,12 +971,12 @@ public class DiscoveryClient implements LookupService {
                 urlPath = "apps/" + instanceInfo.getAppName();
                 response = r.path(urlPath)
                         .request(MediaType.APPLICATION_JSON_TYPE)
-                        .post(Entity.json(instanceInfo), ClientResponse.class);
+                        .post(Entity.json(instanceInfo));
                 break;
             case Cancel:
                 tracer = CANCEL_TIMER.start();
                 urlPath = "apps/" + appPathIdentifier;
-                response = r.path(urlPath).request().delete(ClientResponse.class);
+                response = r.path(urlPath).request().delete();
                 // Return without during de-registration if it is not registered
                 // already and if we get a 404
                 if ((!isRegisteredWithDiscovery)
@@ -1023,7 +1030,7 @@ public class DiscoveryClient implements LookupService {
      * @param response
      *            the HttpResponse object.
      */
-    private void closeResponse(ClientResponse response) {
+    private void closeResponse(Response response) {
         if (response != null) {
             try {
                 response.close();
@@ -1377,11 +1384,11 @@ public class DiscoveryClient implements LookupService {
         return instanceToReturn;
     }
 
-    private ClientResponse getUrl(String fullServiceUrl) {
+    private Response getUrl(String fullServiceUrl) {
         return discoveryHttpClient
                 .target(fullServiceUrl)
                 .request(MediaType.APPLICATION_JSON_TYPE)
-                .get(ClientResponse.class);
+                .get();
     }
 
     /**
@@ -1391,7 +1398,7 @@ public class DiscoveryClient implements LookupService {
     private class HeartbeatThread extends TimerTask {
 
         public void run() {
-            ClientResponse response = null;
+            Response response = null;
             try {
                 response = makeRemoteCall(Action.Renew);
                 logger.debug(PREFIX

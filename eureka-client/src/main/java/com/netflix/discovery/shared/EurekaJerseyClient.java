@@ -25,19 +25,21 @@ import com.netflix.servo.monitor.Counter;
 import com.netflix.servo.monitor.MonitorConfig;
 import com.netflix.servo.monitor.Monitors;
 import com.netflix.servo.monitor.Stopwatch;
+import org.apache.http.client.config.RequestConfig;
 import org.apache.http.conn.scheme.Scheme;
 import org.apache.http.conn.scheme.SchemeRegistry;
 import org.apache.http.conn.ssl.SSLSocketFactory;
-import org.apache.http.params.HttpConnectionParams;
-import org.apache.http.params.HttpParams;
+import org.glassfish.jersey.apache.connector.ApacheClientProperties;
+import org.glassfish.jersey.apache.connector.ApacheConnectorProvider;
 import org.glassfish.jersey.client.ClientConfig;
-import org.glassfish.jersey.client.JerseyClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
+import javax.ws.rs.client.Client;
+import javax.ws.rs.client.ClientBuilder;
 import java.io.FileInputStream;
 import java.security.KeyStore;
 import java.util.concurrent.Executors;
@@ -132,18 +134,18 @@ public final class EurekaJerseyClient {
         }
     }
 
-    private static class CustomApacheHttpClientConfig extends DefaultApacheHttpClient4Config {
+    private static class CustomApacheHttpClientConfig extends ClientConfig {
 
         public CustomApacheHttpClientConfig(String clientName, int maxConnectionsPerHost, int maxTotalConnections)
                 throws Throwable {
             MonitoredConnectionManager cm = new MonitoredConnectionManager(clientName);
             cm.setDefaultMaxPerRoute(maxConnectionsPerHost);
             cm.setMaxTotal(maxTotalConnections);
-            getProperties().put(ApacheHttpClient4Config.PROPERTY_CONNECTION_MANAGER, cm);
+            property(ApacheClientProperties.CONNECTION_MANAGER, cm);
         }
     }
 
-    private static class SSLCustomApacheHttpClientConfig extends DefaultApacheHttpClient4Config {
+    private static class SSLCustomApacheHttpClientConfig extends ClientConfig {
         private static final String PROTOCOL_SCHEME = "SSL";
         private static final int HTTPS_PORT = 443;
         private static final String PROTOCOL = "https";
@@ -173,8 +175,7 @@ public final class EurekaJerseyClient {
                 MonitoredConnectionManager cm = new MonitoredConnectionManager(clientName, sslSchemeRegistry);
                 cm.setDefaultMaxPerRoute(maxConnectionsPerHost);
                 cm.setMaxTotal(maxTotalConnections);
-                getProperties()
-                .put(ApacheHttpClient4Config.PROPERTY_CONNECTION_MANAGER, cm);
+                property(ApacheClientProperties.CONNECTION_MANAGER, cm);
             } finally {
                 if (fin != null) {
                     fin.close();
@@ -204,7 +205,7 @@ public final class EurekaJerseyClient {
 
         private static final int HTTP_CONNECTION_CLEANER_INTERVAL_MS = 30 * 1000;
 
-        private ApacheHttpClient4 apacheHttpClient;
+        private Client apacheHttpClient;
 
         ClientConfig jerseyClientConfig;
 
@@ -223,7 +224,7 @@ public final class EurekaJerseyClient {
 
         private static final Logger s_logger = LoggerFactory.getLogger(JerseyClient.class);
 
-        public org.glassfish.jersey.client.JerseyClient getClient() {
+        public Client getClient() {
             return apacheHttpClient;
         }
 
@@ -234,13 +235,16 @@ public final class EurekaJerseyClient {
         public JerseyClient(int connectionTimeout, int readTimeout, final int connectionIdleTimeout,
                             ClientConfig clientConfig) {
             try {
+                // XXX we mutate the clientConfig a bit to do what we want.
                 jerseyClientConfig = clientConfig;
-                jerseyClientConfig.getClasses().add(DiscoveryJerseyProvider.class);
-                apacheHttpClient = ApacheHttpClient4.create(jerseyClientConfig);
-                HttpParams params = apacheHttpClient.getClientHandler().getHttpClient().getParams();
-
-                HttpConnectionParams.setConnectionTimeout(params, connectionTimeout);
-                HttpConnectionParams.setSoTimeout(params, readTimeout);
+                RequestConfig rc = RequestConfig.custom()
+                    .setConnectTimeout(connectionTimeout)
+                    .setSocketTimeout(readTimeout)
+                    .build();
+                jerseyClientConfig.property(ApacheClientProperties.REQUEST_CONFIG, rc);
+                clientConfig.connectorProvider(new ApacheConnectorProvider());
+                jerseyClientConfig.register(DiscoveryJerseyProvider.class);
+                apacheHttpClient = ClientBuilder.newClient(jerseyClientConfig);
 
                 eurekaConnCleaner.scheduleWithFixedDelay(
                         new ConnectionCleanerTask(connectionIdleTimeout), HTTP_CONNECTION_CLEANER_INTERVAL_MS,
@@ -260,7 +264,7 @@ public final class EurekaJerseyClient {
                 eurekaConnCleaner.shutdown();
             }
             if (apacheHttpClient != null) {
-                apacheHttpClient.destroy();
+                apacheHttpClient.close();
             }
         }
 
@@ -286,11 +290,10 @@ public final class EurekaJerseyClient {
             public void run() {
                 Stopwatch start = executionTimeStats.start();
                 try {
-                    apacheHttpClient
-                    .getClientHandler()
-                    .getHttpClient()
-                    .getConnectionManager()
-                    .closeIdleConnections(connectionIdleTimeout, TimeUnit.SECONDS);
+                    ((MonitoredConnectionManager)
+                        jerseyClientConfig.getProperty(
+                            ApacheClientProperties.CONNECTION_MANAGER))
+                        .closeIdleConnections(connectionIdleTimeout, TimeUnit.SECONDS);
                 } catch (Throwable e) {
                     s_logger.error("Cannot clean connections", e);
                     cleanupFailed.increment();
