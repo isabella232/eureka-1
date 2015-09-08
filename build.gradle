@@ -2,6 +2,7 @@ ext.githubProjectName = 'eureka'
 
 ext {
     jerseyVersion="1.11"
+    jersey2Version="2.21"
     governatorVersion="1.2.10"
     archaiusVersion="0.6.0"
     ribbonVersion="0.3.12"
@@ -44,10 +45,13 @@ project(':eureka-client') {
         compile 'com.thoughtworks.xstream:xstream:1.4.2'
         compile "com.netflix.archaius:archaius-core:$archaiusVersion"
         compile 'javax.ws.rs:jsr311-api:1.1.1'
-        compile 'com.netflix.servo:servo-core:[0.4,1.0)'
-        compile "com.sun.jersey:jersey-core:$jerseyVersion"
-        compile "com.sun.jersey:jersey-client:$jerseyVersion"
-        compile 'com.sun.jersey.contribs:jersey-apache-client4:1.11'
+        compile 'com.netflix.servo:servo-core:0.11.2'
+        compile "org.glassfish.jersey.core:jersey-client:$jersey2Version"
+        compile "org.glassfish.jersey.core:jersey-common:$jersey2Version"
+
+//        compile "com.sun.jersey:jersey-core:$jerseyVersion"
+//        compile "com.sun.jersey:jersey-client:$jerseyVersion"
+//        compile 'com.sun.jersey.contribs:jersey-apache-client4:1.11'
         compile 'org.apache.httpcomponents:httpclient:4.2.1'
         compile "com.netflix.ribbon:ribbon-httpclient:$ribbonVersion"
         compile "com.netflix.governator:governator:$governatorVersion"
