@@ -26,6 +26,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response.Status;
 
+import org.glassfish.jersey.client.ClientResponse;
+import org.glassfish.jersey.message.GZipEncoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,9 +40,6 @@ import com.netflix.discovery.shared.EurekaJerseyClient.JerseyClient;
 import com.netflix.discovery.shared.LookupService;
 import com.netflix.servo.monitor.Monitors;
 import com.netflix.servo.monitor.Stopwatch;
-import com.sun.jersey.api.client.ClientResponse;
-import com.sun.jersey.api.client.filter.GZIPContentEncodingFilter;
-import com.sun.jersey.client.apache4.ApacheHttpClient4;
 
 /**
  * Handles all registry operations that needs to be done on a eureka service running in an other region.
@@ -57,7 +56,7 @@ public class RemoteRegionRegistry implements LookupService<String> {
 
     private static final Logger logger = LoggerFactory
             .getLogger(RemoteRegionRegistry.class);
-    private ApacheHttpClient4 discoveryApacheClient;
+    private org.glassfish.jersey.client.JerseyClient discoveryApacheClient;
     private JerseyClient discoveryJerseyClient;
     private com.netflix.servo.monitor.Timer fetchRegistryTimer;
     private URL remoteRegionURL;
@@ -102,8 +101,7 @@ public class RemoteRegionRegistry implements LookupService<String> {
         if (enableGZIPContentEncodingFilter) {
             // compressed only if there exists a 'Content-Encoding' header
             // whose value is "gzip"
-            discoveryApacheClient
-                    .addFilter(new GZIPContentEncodingFilter(false));
+            discoveryApacheClient.register(new GZipEncoder());
         }
         applications.set(new Applications());
         try {
@@ -179,7 +177,7 @@ public class RemoteRegionRegistry implements LookupService<String> {
                 response = fetchRemoteRegistry(true);
                 if (null != response) {
                     if (response.getStatus() == Status.OK.getStatusCode()) {
-                        delta = response.getEntity(Applications.class);
+                        delta = (Applications)response.getEntity();
                         this.applicationsDelta.set(delta);
                     }
                     if (delta == null) {
@@ -298,7 +296,7 @@ public class RemoteRegionRegistry implements LookupService<String> {
             logger.error("The response is null.");
             return null;
         }
-        Applications apps = response.getEntity(Applications.class);
+        Applications apps = (Applications)response.getEntity();
         if (apps == null) {
             logger.error("The application is null for some reason. Not storing this information");
         } else {
@@ -323,8 +321,8 @@ public class RemoteRegionRegistry implements LookupService<String> {
             String urlPath = delta ? "apps/delta" : "apps/";
 
             response = discoveryApacheClient
-                    .resource(this.remoteRegionURL.toString() + urlPath)
-                    .accept(MediaType.APPLICATION_JSON_TYPE)
+                    .target(this.remoteRegionURL.toString() + urlPath)
+                    .request(MediaType.APPLICATION_JSON_TYPE)
                     .get(ClientResponse.class);
             int httpStatus = response.getStatus();
             if (httpStatus >= 200 && httpStatus < 300) {
@@ -362,7 +360,7 @@ public class RemoteRegionRegistry implements LookupService<String> {
             logger.warn("Response is null while fetching remote registry during reconcile difference.");
             return null;
         }
-        Applications serverApps = response.getEntity(Applications.class);
+        Applications serverApps = (Applications)response.getEntity();
         Map<String, List<String>> reconcileDiffMap = getApplications()
                 .getReconcileMapDiff(serverApps);
         String reconcileString = "";

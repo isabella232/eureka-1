@@ -37,9 +37,14 @@ import javax.annotation.Nullable;
 import javax.annotation.PreDestroy;
 import javax.inject.Singleton;
 import javax.naming.directory.DirContext;
+import javax.ws.rs.client.Entity;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response.Status;
 
+import org.glassfish.jersey.client.ClientConfig;
+import org.glassfish.jersey.client.ClientResponse;
+import org.glassfish.jersey.client.JerseyWebTarget;
+import org.glassfish.jersey.message.GZipEncoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -63,12 +68,6 @@ import com.netflix.eventbus.spi.EventBus;
 import com.netflix.servo.monitor.Counter;
 import com.netflix.servo.monitor.Monitors;
 import com.netflix.servo.monitor.Stopwatch;
-import com.sun.jersey.api.client.ClientResponse;
-import com.sun.jersey.api.client.WebResource;
-import com.sun.jersey.api.client.config.ClientConfig;
-import com.sun.jersey.api.client.filter.GZIPContentEncodingFilter;
-import com.sun.jersey.client.apache4.ApacheHttpClient4;
-import com.sun.jersey.client.apache4.config.DefaultApacheHttpClient4Config;
 
 /**
  * The class that is instrumental for interactions with <tt>Eureka Server</tt>.
@@ -144,7 +143,7 @@ public class DiscoveryClient implements LookupService {
     private boolean isRegisteredWithDiscovery = false;
     private String discoveryServerAMIId;
     private JerseyClient discoveryJerseyClient;
-    private ApacheHttpClient4 discoveryApacheClient;
+    private org.glassfish.jersey.client.JerseyClient discoveryHttpClient;
     protected static EurekaClientConfig clientConfig;
     private final AtomicReference<String> remoteRegionsToFetch;
     private final InstanceRegionChecker instanceRegionChecker;
@@ -157,7 +156,7 @@ public class DiscoveryClient implements LookupService {
     private final ScheduledExecutorService scheduler;
 
     private final EventBus eventBus;
-    
+
     public static class DiscoveryClientOptionalArgs {
         @Inject(optional = true)
         private EventBus eventBus;
@@ -170,7 +169,7 @@ public class DiscoveryClient implements LookupService {
     @Inject
     public DiscoveryClient(InstanceInfo myInfo, EurekaClientConfig config, DiscoveryClientOptionalArgs args) {
         try {
-            if (args != null) 
+            if (args != null)
                 this.eventBus = args.eventBus;
             else
                 this.eventBus = null;
@@ -197,7 +196,7 @@ public class DiscoveryClient implements LookupService {
                     clientConfig.getEurekaServerTotalConnectionsPerHost(),
                     clientConfig.getEurekaServerTotalConnections(),
                     clientConfig.getEurekaConnectionIdleTimeoutSeconds());
-            discoveryApacheClient = discoveryJerseyClient.getClient();
+            discoveryHttpClient = discoveryJerseyClient.getClient();
             ClientConfig cc = discoveryJerseyClient.getClientconfig();
             remoteRegionsToFetch = new AtomicReference<String>(clientConfig.fetchRegistryForRemoteRegions());
             AzToRegionMapper azToRegionMapper;
@@ -216,14 +215,14 @@ public class DiscoveryClient implements LookupService {
             if (enableGZIPContentEncodingFilter) {
                 // compressed only if there exists a 'Content-Encoding' header
                 // whose value is "gzip"
-                discoveryApacheClient.addFilter(new GZIPContentEncodingFilter(
-                        false));
+                discoveryHttpClient.register(new GZipEncoder());
             }
-            if (proxyHost != null && proxyPort != null) {
-                cc.getProperties().put(
-                        DefaultApacheHttpClient4Config.PROPERTY_PROXY_URI,
-                        "http://" + proxyHost + ":" + proxyPort);
-            }
+            // TODO: fix proxy
+//            if (proxyHost != null && proxyPort != null) {
+//                cc.getProperties().put(
+//                        ClientConfig.PR,
+//                        "http://" + proxyHost + ":" + proxyPort);
+//            }
 
         } catch (Throwable e) {
             throw new RuntimeException("Failed to initialize DiscoveryClient!", e);
@@ -458,7 +457,7 @@ public class DiscoveryClient implements LookupService {
         Applications apps = null;
         try {
             response = getUrl(serviceUrl + "apps/");
-            apps = response.getEntity(Applications.class);
+            apps = (Applications)response.getEntity();
             logger.debug(PREFIX + appPathIdentifier + " -  refresh status: "
                     + response.getStatus());
             return apps;
@@ -646,7 +645,7 @@ public class DiscoveryClient implements LookupService {
                 Applications delta = null;
                 response = makeRemoteCall(Action.Refresh_Delta);
                 if (response.getStatus() == Status.OK.getStatusCode()) {
-                    delta = response.getEntity(Applications.class);
+                    delta = (Applications)response.getEntity();
                 }
                 if (delta == null) {
                     logger.warn("The server does not allow the delta revision to be applied because it is not safe. "
@@ -747,7 +746,7 @@ public class DiscoveryClient implements LookupService {
         ClientResponse response;
         response = makeRemoteCall(Action.Refresh);
         logger.info("Getting all instance registry info from the eureka server");
-        Applications apps = response.getEntity(Applications.class);
+        Applications apps = (Applications)response.getEntity();
         if (apps == null) {
             logger.error("The application is null for some reason. Not storing this information");
         } else {
@@ -793,7 +792,7 @@ public class DiscoveryClient implements LookupService {
 
         this.closeResponse(response);
         response = makeRemoteCall(Action.Refresh);
-        Applications serverApps = response.getEntity(Applications.class);
+        Applications serverApps = (Applications)response.getEntity();
         try {
             Map<String, List<String>> reconcileDiffMap = getApplications().getReconcileMapDiff(serverApps);
             String reconcileString = "";
@@ -930,7 +929,7 @@ public class DiscoveryClient implements LookupService {
                     .equals(action)))) {
                 return null;
             }
-            WebResource r = discoveryApacheClient.resource(serviceUrl);
+            JerseyWebTarget r = discoveryHttpClient.target(serviceUrl);
             switch (action) {
             case Renew:
                 tracer = RENEW_TIMER.start();
@@ -941,7 +940,8 @@ public class DiscoveryClient implements LookupService {
                                 instanceInfo.getStatus().toString())
                         .queryParam("lastDirtyTimestamp",
                                 instanceInfo.getLastDirtyTimestamp().toString())
-                        .put(ClientResponse.class);
+                        .request()
+                        .put(null, ClientResponse.class);
                 break;
             case Refresh:
                 tracer = REFRESH_TIMER.start();
@@ -963,13 +963,13 @@ public class DiscoveryClient implements LookupService {
                 tracer = REGISTER_TIMER.start();
                 urlPath = "apps/" + instanceInfo.getAppName();
                 response = r.path(urlPath)
-                        .type(MediaType.APPLICATION_JSON_TYPE)
-                        .post(ClientResponse.class, instanceInfo);
+                        .request(MediaType.APPLICATION_JSON_TYPE)
+                        .post(Entity.json(instanceInfo), ClientResponse.class);
                 break;
             case Cancel:
                 tracer = CANCEL_TIMER.start();
                 urlPath = "apps/" + appPathIdentifier;
-                response = r.path(urlPath).delete(ClientResponse.class);
+                response = r.path(urlPath).request().delete(ClientResponse.class);
                 // Return without during de-registration if it is not registered
                 // already and if we get a 404
                 if ((!isRegisteredWithDiscovery)
@@ -1378,11 +1378,10 @@ public class DiscoveryClient implements LookupService {
     }
 
     private ClientResponse getUrl(String fullServiceUrl) {
-        ClientResponse cr = discoveryApacheClient.resource(fullServiceUrl)
-                .accept(MediaType.APPLICATION_JSON_TYPE)
+        return discoveryHttpClient
+                .target(fullServiceUrl)
+                .request(MediaType.APPLICATION_JSON_TYPE)
                 .get(ClientResponse.class);
-
-        return cr;
     }
 
     /**
