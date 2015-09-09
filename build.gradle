@@ -56,6 +56,7 @@ project(':eureka-client') {
         // XXX still need ribbon for some internals (MonitoredConnectionManager)
         // but not its jersey 1.x stuff
         compile("com.netflix.ribbon:ribbon-httpclient:$ribbonVersion") {
+            exclude group: "com.sun.jersey", module: "jersey-core"
             exclude group: "com.sun.jersey", module: "jersey-client"
             exclude group: "com.sun.jersey.contribs", module: "jersey-apache-client4"
             exclude group: "javax.ws.rs", module: "jsr311-api"
