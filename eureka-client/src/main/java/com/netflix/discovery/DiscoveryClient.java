@@ -908,6 +908,9 @@ public class DiscoveryClient implements LookupService {
         return makeRemoteCall(action, 0);
     }
 
+    private static final javax.ws.rs.client.Entity<Application> DUMMY =
+      javax.ws.rs.client.Entity.json(new Application());
+
     /**
      * Makes remote calls with the corresponding action(register,renew etc).
      *
@@ -948,7 +951,12 @@ public class DiscoveryClient implements LookupService {
                         .queryParam("lastDirtyTimestamp",
                                 instanceInfo.getLastDirtyTimestamp().toString())
                         .request()
-                        .put(null);
+                        // XXX in violation of the HTTP spec, the server
+                        // expects a completely empty PUT request.
+                        // jersey 2 appropriately IAEs if you pass null here,
+                        // so pass something arbitrary, yet still serializable
+                        // in eureka's weird custom serialization stack
+                        .put(DUMMY);
                 break;
             case Refresh:
                 tracer = REFRESH_TIMER.start();
