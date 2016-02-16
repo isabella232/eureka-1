@@ -16,41 +16,6 @@
 
 package com.netflix.discovery;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.TimerTask;
-import java.util.TreeMap;
-import java.util.TreeSet;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-
-import javax.annotation.Nullable;
-import javax.annotation.PreDestroy;
-import javax.inject.Singleton;
-import javax.naming.directory.DirContext;
-import javax.ws.rs.client.*;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
-import javax.ws.rs.core.Response.Status;
-
-import org.apache.http.HttpHost;
-import org.apache.http.client.config.RequestConfig;
-import org.glassfish.jersey.apache.connector.ApacheClientProperties;
-import org.glassfish.jersey.client.ClientConfig;
-import org.glassfish.jersey.client.ClientResponse;
-import org.glassfish.jersey.message.GZipEncoder;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.google.inject.Inject;
 import com.netflix.appinfo.AmazonInfo;
 import com.netflix.appinfo.AmazonInfo.MetaDataKey;
@@ -71,6 +36,41 @@ import com.netflix.eventbus.spi.EventBus;
 import com.netflix.servo.monitor.Counter;
 import com.netflix.servo.monitor.Monitors;
 import com.netflix.servo.monitor.Stopwatch;
+import org.apache.http.HttpHost;
+import org.apache.http.client.config.RequestConfig;
+import org.glassfish.jersey.apache.connector.ApacheClientProperties;
+import org.glassfish.jersey.client.ClientConfig;
+import org.glassfish.jersey.message.GZipEncoder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
+import javax.annotation.PreDestroy;
+import javax.inject.Singleton;
+import javax.naming.directory.DirContext;
+import javax.ws.rs.client.Client;
+import javax.ws.rs.client.Entity;
+import javax.ws.rs.client.WebTarget;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
+import javax.ws.rs.core.Response.Status;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TimerTask;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * The class that is instrumental for interactions with <tt>Eureka Server</tt>.
@@ -151,6 +151,7 @@ public class DiscoveryClient implements LookupService {
     private final AtomicReference<String> remoteRegionsToFetch;
     private final InstanceRegionChecker instanceRegionChecker;
     private volatile InstanceInfo.InstanceStatus lastRemoteInstanceStatus = InstanceInfo.InstanceStatus.UNKNOWN;
+    private final CopyOnWriteArraySet<EurekaEventListener> eventListeners = new CopyOnWriteArraySet<EurekaEventListener>();
 
     private enum Action {
         Register, Cancel, Renew, Refresh, Refresh_Delta
@@ -172,10 +173,18 @@ public class DiscoveryClient implements LookupService {
     @Inject
     public DiscoveryClient(InstanceInfo myInfo, EurekaClientConfig config, DiscoveryClientOptionalArgs args) {
         try {
-            if (args != null)
+            if (args != null) {
                 this.eventBus = args.eventBus;
-            else
+                registerEventListener(new EurekaEventListener() {
+                    @Override
+                    public void onEvent(EurekaEvent event) {
+                        eventBus.publish(event);
+                    }
+                });
+            }
+            else {
                 this.eventBus = null;
+            }
             scheduler = Executors.newScheduledThreadPool(4);
             clientConfig = config;
             final String zone = getZone(myInfo);
@@ -320,6 +329,16 @@ public class DiscoveryClient implements LookupService {
         if (callback != null) {
             healthCheckCallback = callback;
         }
+    }
+
+//    @Override
+    public void registerEventListener(EurekaEventListener eventListener) {
+        this.eventListeners.add(eventListener);
+    }
+
+//    @Override
+    public boolean unregisterEventListener(EurekaEventListener eventListener) {
+        return this.eventListeners.remove(eventListener);
     }
 
     /**
@@ -675,11 +694,6 @@ public class DiscoveryClient implements LookupService {
 
             logger.debug(PREFIX + appPathIdentifier + " -  refresh status: "
                          + response.getStatus());
-
-            updateInstanceRemoteStatus();
-
-            onCacheRefreshed();
-
         } catch (Throwable e) {
             logger.error(
                     PREFIX + appPathIdentifier
@@ -692,6 +706,14 @@ public class DiscoveryClient implements LookupService {
             }
             closeResponse(response);
         }
+
+        // Notify about cache refresh before updating the instance remote status
+        onCacheRefreshed();
+
+        // Update remote status based on refreshed data held in the cache
+        updateInstanceRemoteStatus();
+
+        // registry was fetched successfully, so return true
         return true;
     }
 
@@ -1731,7 +1753,6 @@ public class DiscoveryClient implements LookupService {
         }
     }
 
-
     /**
      * Invoked when the remote status of this client has changed.
      * Subclasses may override this method to implement custom behavior if needed.
@@ -1740,7 +1761,7 @@ public class DiscoveryClient implements LookupService {
      * @param newStatus the new remote {@link InstanceStatus}
      */
     protected void onRemoteStatusChanged(InstanceInfo.InstanceStatus oldStatus, InstanceInfo.InstanceStatus newStatus) {
-    	fireEvent(new StatusChangeEvent(oldStatus, newStatus));
+        fireEvent(new StatusChangeEvent(oldStatus, newStatus));
     }
 
     /**
@@ -1750,19 +1771,17 @@ public class DiscoveryClient implements LookupService {
      * Subclasses may override this method to implement custom behavior if needed.
      */
     protected void onCacheRefreshed() {
-    	fireEvent(new CacheRefreshedEvent());
+        fireEvent(new CacheRefreshedEvent());
     }
-
 
     /**
      * Send the given event on the EventBus if one is available
      *
      * @param event the event to send on the eventBus
      */
-    protected void fireEvent(DiscoveryEvent event) {
-    	// Publish event if an EventBus is available
-        if (eventBus != null) {
-            eventBus.publish(event);
+    protected void fireEvent(final EurekaEvent event) {
+        for (EurekaEventListener listener : eventListeners) {
+            listener.onEvent(event);
         }
     }
 }
