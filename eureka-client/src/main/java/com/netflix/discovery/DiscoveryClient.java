@@ -674,9 +674,11 @@ public class DiscoveryClient implements LookupService {
             }
 
             logger.debug(PREFIX + appPathIdentifier + " -  refresh status: "
-                    + response.getStatus());
+                         + response.getStatus());
 
             updateInstanceRemoteStatus();
+
+            onCacheRefreshed();
 
         } catch (Throwable e) {
             logger.error(
@@ -712,11 +714,7 @@ public class DiscoveryClient implements LookupService {
         // Notify if status changed
         if (lastRemoteInstanceStatus != currentRemoteInstanceStatus) {
             try {
-                if (eventBus != null) {
-                    StatusChangeEvent event = new StatusChangeEvent(lastRemoteInstanceStatus,
-                            currentRemoteInstanceStatus);
-                    eventBus.publish(event);
-                }
+                onRemoteStatusChanged(lastRemoteInstanceStatus, currentRemoteInstanceStatus);
             } finally {
                 lastRemoteInstanceStatus = currentRemoteInstanceStatus;
             }
